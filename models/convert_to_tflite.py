@@ -31,9 +31,9 @@ class TFLiteConverter:
         print(f"Model directory: {config['model_dir']}")
         print(f"Quantization: {config['quantization']}")
     
-    def load_pytorch_model(self):
-        """Load trained PyTorch model and convert to TensorFlow"""
-        print("\n📂 Loading PyTorch model...")
+    def load_tensorflow_model(self):
+        """Load trained TensorFlow model"""
+        print("\n📂 Loading TensorFlow model...")
         
         # Load label mapping
         with open(f"{self.config['model_dir']}/label_mapping.json", 'r') as f:
@@ -45,15 +45,14 @@ class TFLiteConverter:
         # Load tokenizer
         tokenizer = DistilBertTokenizer.from_pretrained(self.config['model_dir'])
         
-        # Convert PyTorch model to TensorFlow
-        print("\n🔄 Converting PyTorch to TensorFlow...")
+        # Load TensorFlow model
+        print("\n📥 Loading TensorFlow model...")
         model = TFDistilBertForSequenceClassification.from_pretrained(
             self.config['model_dir'],
-            from_pt=True,
             num_labels=num_labels
         )
         
-        print("✅ Model loaded and converted successfully")
+        print("✅ Model loaded successfully")
         
         return model, tokenizer, label_config
     
@@ -291,7 +290,7 @@ def main():
     converter = TFLiteConverter()
     
     # Load model
-    model, tokenizer, label_config = converter.load_pytorch_model()
+    model, tokenizer, label_config = converter.load_tensorflow_model()
     
     # Create concrete function
     concrete_func = converter.create_concrete_function(model)

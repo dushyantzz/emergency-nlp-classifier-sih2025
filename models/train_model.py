@@ -1,17 +1,15 @@
 import os
 import pandas as pd
 import numpy as np
-import torch
+import tensorflow as tf
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 from transformers import (
     DistilBertTokenizer,
-    DistilBertForSequenceClassification,
-    Trainer,
-    TrainingArguments,
-    EarlyStoppingCallback
+    TFDistilBertForSequenceClassification,
+    TFTrainingArguments,
+    TFTrainer
 )
-from torch.utils.data import Dataset
 import json
 from tqdm import tqdm
 
@@ -33,50 +31,29 @@ CONFIG = {
 }
 
 
-class EmergencyDataset(Dataset):
-    """Custom Dataset for emergency classification"""
-    
-    def __init__(self, texts, labels, tokenizer, max_length):
-        self.texts = texts
-        self.labels = labels
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-    
-    def __len__(self):
-        return len(self.texts)
-    
-    def __getitem__(self, idx):
-        text = str(self.texts[idx])
-        label = self.labels[idx]
-        
-        encoding = self.tokenizer(
-            text,
-            add_special_tokens=True,
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-        
-        return {
-            'input_ids': encoding['input_ids'].flatten(),
-            'attention_mask': encoding['attention_mask'].flatten(),
-            'labels': torch.tensor(label, dtype=torch.long)
-        }
-
-
 class EmergencyClassifierTrainer:
-    """Trainer class for emergency classification model"""
+    """Trainer class for emergency classification model using TensorFlow"""
     
     def __init__(self, config=CONFIG):
         self.config = config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"💻 Using device: {self.device}")
         
-        # Set random seeds
-        torch.manual_seed(config['seed'])
+        # Set random seeds for reproducibility
+        tf.random.set_seed(config['seed'])
         np.random.seed(config['seed'])
+        os.environ['PYTHONHASHSEED'] = str(config['seed'])
+        
+        # Check for GPU
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            print(f"💻 Using GPU: {gpus[0]}")
+            try:
+                # Enable memory growth
+                for gpu in gpus:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+            except RuntimeError as e:
+                print(e)
+        else:
+            print("💻 Using CPU")
         
         # Label mapping
         self.label_map = {
@@ -131,45 +108,84 @@ class EmergencyClassifierTrainer:
         print(f"  Validation: {len(val_texts)}")
         print(f"  Test: {len(test_texts)}")
         
-        # Create datasets
-        train_dataset = EmergencyDataset(
-            train_texts, train_labels, self.tokenizer, self.config['max_length']
-        )
-        val_dataset = EmergencyDataset(
-            val_texts, val_labels, self.tokenizer, self.config['max_length']
-        )
-        test_dataset = EmergencyDataset(
-            test_texts, test_labels, self.tokenizer, self.config['max_length']
+        # Tokenize and prepare datasets
+        train_encodings = self.tokenizer(
+            train_texts,
+            truncation=True,
+            padding='max_length',
+            max_length=self.config['max_length'],
+            return_tensors='tf'
         )
         
-        return train_dataset, val_dataset, test_dataset
+        val_encodings = self.tokenizer(
+            val_texts,
+            truncation=True,
+            padding='max_length',
+            max_length=self.config['max_length'],
+            return_tensors='tf'
+        )
+        
+        test_encodings = self.tokenizer(
+            test_texts,
+            truncation=True,
+            padding='max_length',
+            max_length=self.config['max_length'],
+            return_tensors='tf'
+        )
+        
+        # Create TensorFlow datasets
+        train_dataset = tf.data.Dataset.from_tensor_slices((
+            {
+                'input_ids': train_encodings['input_ids'],
+                'attention_mask': train_encodings['attention_mask']
+            },
+            np.array(train_labels, dtype=np.int32)
+        )).batch(self.config['batch_size']).shuffle(1000).prefetch(tf.data.AUTOTUNE)
+        
+        val_dataset = tf.data.Dataset.from_tensor_slices((
+            {
+                'input_ids': val_encodings['input_ids'],
+                'attention_mask': val_encodings['attention_mask']
+            },
+            np.array(val_labels, dtype=np.int32)
+        )).batch(self.config['batch_size']).prefetch(tf.data.AUTOTUNE)
+        
+        test_dataset = tf.data.Dataset.from_tensor_slices((
+            {
+                'input_ids': test_encodings['input_ids'],
+                'attention_mask': test_encodings['attention_mask']
+            },
+            np.array(test_labels, dtype=np.int32)
+        )).batch(self.config['batch_size']).prefetch(tf.data.AUTOTUNE)
+        
+        return train_dataset, val_dataset, test_dataset, test_labels
     
     def create_model(self):
         """Create DistilBERT model for classification"""
         print(f"\n🤖 Creating model: {self.config['model_name']}")
         
-        model = DistilBertForSequenceClassification.from_pretrained(
+        model = TFDistilBertForSequenceClassification.from_pretrained(
             self.config['model_name'],
-            num_labels=len(self.label_map),
-            problem_type="single_label_classification"
+            num_labels=len(self.label_map)
         )
         
-        model.to(self.device)
+        # Compile model
+        optimizer = tf.keras.optimizers.AdamW(
+            learning_rate=self.config['learning_rate'],
+            weight_decay=self.config['weight_decay']
+        )
         
-        print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-        print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+        loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+        metrics = [tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy')]
+        
+        model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
+        
+        # Count parameters
+        total_params = sum([tf.size(w).numpy() for w in model.trainable_variables])
+        print(f"Model parameters: {total_params:,}")
+        print(f"Trainable parameters: {total_params:,}")
         
         return model
-    
-    def compute_metrics(self, eval_pred):
-        """Compute evaluation metrics"""
-        predictions, labels = eval_pred
-        predictions = np.argmax(predictions, axis=1)
-        
-        # Accuracy
-        accuracy = (predictions == labels).mean()
-        
-        return {'accuracy': accuracy}
     
     def train(self, train_dataset, val_dataset):
         """Train the model"""
@@ -178,45 +194,48 @@ class EmergencyClassifierTrainer:
         # Create model
         model = self.create_model()
         
-        # Training arguments
-        training_args = TrainingArguments(
-            output_dir=self.config['output_dir'],
-            num_train_epochs=self.config['num_epochs'],
-            per_device_train_batch_size=self.config['batch_size'],
-            per_device_eval_batch_size=self.config['batch_size'],
-            learning_rate=self.config['learning_rate'],
-            warmup_steps=self.config['warmup_steps'],
-            weight_decay=self.config['weight_decay'],
-            logging_dir=f"{self.config['output_dir']}/logs",
-            logging_steps=self.config['logging_steps'],
-            eval_strategy="steps",
-            eval_steps=self.config['eval_steps'],
-            save_strategy="steps",
-            save_steps=self.config['save_steps'],
-            load_best_model_at_end=True,
-            metric_for_best_model="accuracy",
-            greater_is_better=True,
-            save_total_limit=2,
-            seed=self.config['seed'],
-            report_to="none"  # Disable wandb/tensorboard
-        )
+        # Create callbacks
+        callbacks = [
+            tf.keras.callbacks.EarlyStopping(
+                monitor='val_loss',
+                patience=3,
+                restore_best_weights=True,
+                verbose=1
+            ),
+            tf.keras.callbacks.ModelCheckpoint(
+                filepath=f"{self.config['output_dir']}/checkpoints/checkpoint-{{epoch:02d}}",
+                save_weights_only=True,
+                monitor='val_accuracy',
+                mode='max',
+                save_best_only=True,
+                verbose=1
+            ),
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=0.5,
+                patience=2,
+                min_lr=1e-7,
+                verbose=1
+            )
+        ]
         
-        # Create trainer
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=val_dataset,
-            compute_metrics=self.compute_metrics,
-            callbacks=[EarlyStoppingCallback(early_stopping_patience=3)]
-        )
+        # Calculate steps per epoch
+        steps_per_epoch = len(train_dataset)
+        validation_steps = len(val_dataset)
         
-        # Train
-        trainer.train()
+        # Train model
+        history = model.fit(
+            train_dataset,
+            epochs=self.config['num_epochs'],
+            validation_data=val_dataset,
+            callbacks=callbacks,
+            verbose=1
+        )
         
         # Save final model
         print(f"\n💾 Saving model to {self.config['output_dir']}...")
-        trainer.save_model(self.config['output_dir'])
+        os.makedirs(self.config['output_dir'], exist_ok=True)
+        model.save_pretrained(self.config['output_dir'])
         self.tokenizer.save_pretrained(self.config['output_dir'])
         
         # Save label mapping
@@ -231,23 +250,22 @@ class EmergencyClassifierTrainer:
         
         print("✅ Training complete!")
         
-        return trainer
+        return model, history
     
-    def evaluate(self, trainer, test_dataset):
+    def evaluate(self, model, test_dataset, test_labels):
         """Evaluate model on test set"""
         print("\n📊 Evaluating on test set...")
         
         # Get predictions
-        predictions = trainer.predict(test_dataset)
-        pred_labels = np.argmax(predictions.predictions, axis=1)
-        true_labels = predictions.label_ids
+        predictions = model.predict(test_dataset, verbose=1)
+        pred_labels = np.argmax(predictions.logits, axis=1)
         
         # Calculate metrics
         print("\n" + "="*80)
         print("CLASSIFICATION REPORT")
         print("="*80)
         print(classification_report(
-            true_labels,
+            test_labels,
             pred_labels,
             target_names=list(self.label_map.keys()),
             digits=4
@@ -257,13 +275,13 @@ class EmergencyClassifierTrainer:
         print("\n" + "="*80)
         print("CONFUSION MATRIX")
         print("="*80)
-        cm = confusion_matrix(true_labels, pred_labels)
+        cm = confusion_matrix(test_labels, pred_labels)
         print("\nRows: True labels, Columns: Predicted labels")
         print(f"Categories: {list(self.label_map.keys())}\n")
         print(cm)
         
         # Overall accuracy
-        accuracy = (pred_labels == true_labels).mean()
+        accuracy = (pred_labels == test_labels).mean()
         print(f"\n🎯 Overall Test Accuracy: {accuracy*100:.2f}%")
         
         return accuracy
@@ -271,20 +289,20 @@ class EmergencyClassifierTrainer:
 
 def main():
     """Main execution"""
-    print("🔥 Emergency Classifier Training - SIH 2025")
+    print("🔥 Emergency Classifier Training - SIH 2025 (TensorFlow)")
     print("="*80)
     
     # Initialize trainer
     trainer_obj = EmergencyClassifierTrainer()
     
     # Load data
-    train_dataset, val_dataset, test_dataset = trainer_obj.load_data()
+    train_dataset, val_dataset, test_dataset, test_labels = trainer_obj.load_data()
     
     # Train model
-    trainer = trainer_obj.train(train_dataset, val_dataset)
+    model, history = trainer_obj.train(train_dataset, val_dataset)
     
     # Evaluate
-    accuracy = trainer_obj.evaluate(trainer, test_dataset)
+    accuracy = trainer_obj.evaluate(model, test_dataset, test_labels)
     
     print("\n" + "="*80)
     print("✨ Training pipeline complete!")

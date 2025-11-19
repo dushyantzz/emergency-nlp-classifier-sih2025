@@ -2,8 +2,7 @@ import os
 import json
 import numpy as np
 import tensorflow as tf
-from transformers import DistilBertTokenizer, DistilBertForSequenceClassification
-import torch
+from transformers import DistilBertTokenizer, TFDistilBertForSequenceClassification
 
 
 class ModelTester:
@@ -23,11 +22,10 @@ class ModelTester:
         
         print("🧪 Model Tester Initialized")
     
-    def test_pytorch_model(self, text):
-        """Test PyTorch model"""
+    def test_tensorflow_model(self, text):
+        """Test TensorFlow model"""
         # Load model
-        model = DistilBertForSequenceClassification.from_pretrained(self.model_dir)
-        model.eval()
+        model = TFDistilBertForSequenceClassification.from_pretrained(self.model_dir)
         
         # Tokenize
         encoding = self.tokenizer(
@@ -35,20 +33,19 @@ class ModelTester:
             truncation=True,
             padding='max_length',
             max_length=128,
-            return_tensors='pt'
+            return_tensors='tf'
         )
         
         # Predict
-        with torch.no_grad():
-            outputs = model(**encoding)
-            logits = outputs.logits
-            probs = torch.nn.functional.softmax(logits, dim=-1)
-            predicted_idx = torch.argmax(probs, dim=-1).item()
+        outputs = model(encoding)
+        logits = outputs.logits
+        probs = tf.nn.softmax(logits, axis=-1).numpy()
+        predicted_idx = np.argmax(probs[0])
         
         return {
             'category': self.id_to_label[predicted_idx],
-            'confidence': probs[0][predicted_idx].item(),
-            'all_probs': {self.id_to_label[i]: probs[0][i].item() for i in range(len(self.id_to_label))}
+            'confidence': float(probs[0][predicted_idx]),
+            'all_probs': {self.id_to_label[i]: float(probs[0][i]) for i in range(len(self.id_to_label))}
         }
     
     def test_tflite_model(self, text):
@@ -109,12 +106,12 @@ def main():
     
     tester = ModelTester()
     
-    print("\n🔬 Testing PyTorch Model")
+    print("\n🔬 Testing TensorFlow Model")
     print("="*80)
     
     correct = 0
     for text, expected in test_cases:
-        result = tester.test_pytorch_model(text)
+        result = tester.test_tensorflow_model(text)
         match = "✅" if result['category'] == expected else "❌"
         
         print(f"\n{match} Input: {text[:60]}...")
@@ -124,7 +121,7 @@ def main():
             correct += 1
     
     accuracy = (correct / len(test_cases)) * 100
-    print(f"\n🎯 PyTorch Accuracy: {accuracy:.1f}% ({correct}/{len(test_cases)})")
+    print(f"\n🎯 TensorFlow Accuracy: {accuracy:.1f}% ({correct}/{len(test_cases)})")
     
     # Test TFLite
     if os.path.exists(tester.tflite_path):
