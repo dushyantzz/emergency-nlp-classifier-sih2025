@@ -1,4 +1,4 @@
-# Emergency NLP Classifier - SIH 2025 🚨
+# Emergency NLP Classifier 
 
 **Team Daredevils** | Smart Tourist Safety Monitoring System
 
