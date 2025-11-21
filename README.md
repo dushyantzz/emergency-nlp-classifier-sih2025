@@ -248,14 +248,6 @@ MIT License - See LICENSE file for details
 
 ---
 
-## 👥 Team Daredevils
-
-**AI/ML Developer**: Dushyant Kumar  
-**GitHub**: [@dushyantzz](https://github.com/dushyantzz)  
-**Project**: SIH 2025 - Smart Tourist Safety Monitoring
-
----
-
 ## 📞 Contact
 
 For questions or collaboration:
